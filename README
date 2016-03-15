@@ -1,0 +1,14 @@
+git-iterative-blame is a custom Git command that makes tracing blame back in
+time easier.
+
+You provide a file and line (e.g. tests/example.py:110) and git-iterative-blame
+will blame that file, show the commit and search for lines similar to the line
+you provided. Then you can select one on which to recur or enter a new location,
+and git-iterative-blame will blame the state of the file you chose just before
+that commit and repeat the process. This provides a relatively easy way to find
+when a line was introduced in the entire repository, even if it was moved
+many times.
+
+To use this, put git_iterative_blame.py on your PATH. If you rename it (or
+symlink it) to git-iterative-blame, then it will be executable as a normal
+Git command (e.g. `git iterative-blame file:line`)
