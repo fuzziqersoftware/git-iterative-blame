@@ -1,11 +1,15 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import argparse
 import os
 import re
+import readline
 import subprocess
 import sys
 
+
+#####################
+# terminal functions
 
 terminal_code_for_name = {
     'bold': '01',
@@ -37,10 +41,24 @@ terminal_escape = lambda *items: \
         '\x1B[00;' + ';'.join(terminal_code_for_name[n] for n in items) + 'm'
 
 
+##################
+# input functions
+
+def complete_filenames(text, state, filenames, suffix=''):
+    matches = [(s + suffix) for s in filenames if s.startswith(text)]
+    try:
+        return matches[state]
+    except IndexError:
+        return None
+
+
+################
+# git functions
+
 class Commit(object):
     def __init__(self, h):
         self.hash = subprocess.check_output(['git', 'rev-parse', h],
-                                            shell=False).strip()
+                                            shell=False).strip().decode('utf-8')
         self.author = None
         self.date = None
         self.file_diffs = {}
@@ -51,6 +69,7 @@ class Commit(object):
                                             shell=False).splitlines():
             if not line:
                 continue
+            line = line.decode('utf-8')
 
             if line.startswith('commit'):
                 assert self.hash == line[7:]
@@ -80,9 +99,9 @@ class Commit(object):
     def print_stream(self, stream, highlight_lines={}, context_around_highlights=None):
         stream.write('%s by %s on %s\n' % (self.hash, self.author, self.date))
         stream.write('    ' + self.commit_message.replace('\n', '\n    ') + '\n\n')
-        for _, d in sorted(self.file_diffs.iteritems()):
+        for _, d in sorted(self.file_diffs.items()):
             this_file_highlight_lines = {}
-            for (filename, left_num, right_num), highlight_char in highlight_lines.iteritems():
+            for (filename, left_num, right_num), highlight_char in highlight_lines.items():
                 if filename == d.filename:
                     this_file_highlight_lines[(left_num, right_num)] = highlight_char
             if (context_around_highlights is not None) and (not this_file_highlight_lines):
@@ -198,7 +217,7 @@ class FileDiff(object):
             # too slow
             if context_around_highlights is not None:
                 should_show_line = False
-                for (left_num, right_num), highlight_char in highlight_lines.iteritems():
+                for (left_num, right_num), highlight_char in highlight_lines.items():
                     if (l.left_line_num is not None) and (left_num is not None) and \
                             abs(l.left_line_num - left_num) < context_around_highlights:
                         should_show_line = True
@@ -243,6 +262,7 @@ class FileBlame(object):
         else:
             cmd = ['git', 'blame', '-slfn', filename]
         for line in subprocess.check_output(cmd, shell=False).splitlines():
+            line = line.decode('utf-8')
             close_paren = line.find(')')
             commit_hash, filename, orig_line_number, current_line_number = \
                     line[:close_paren].strip().split()
@@ -269,6 +289,9 @@ class FileBlame(object):
             l.print_stream(stream)
 
 
+#####################
+# matching functions
+
 def lines_match(l1, l2, params={}):
     l1_strip = l1.line_contents.strip()
     l2_strip = l2.line_contents.strip()
@@ -285,49 +308,58 @@ def lines_match(l1, l2, params={}):
     return False
 
 
+########################
+# interactive interface
+
 def iterative_blame_interactive(target_filename, target_line_num,
                                 commit_hash='HEAD', match_params={},
                                 full_diffs=False):
 
-    context_around_highlights = None if full_diffs else 10
-
     while True:
-        is_root_commit = False
         sys.stdout.write('... blame %s -- %s\n' % (commit_hash, target_filename))
         b = FileBlame(target_filename, commit_hash=commit_hash)
 
-        blame_target_line = b.get_line_current(target_line_num)
-        line_target_filename = blame_target_line.filename
-        if line_target_filename != target_filename:
-            target_filename = line_target_filename
-        target_commit_hash = blame_target_line.commit_hash
+        if target_line_num:
+            blame_target_line = b.get_line_current(target_line_num)
+            line_target_filename = blame_target_line.filename
+            if line_target_filename != target_filename:
+                target_filename = line_target_filename
+            target_commit_hash = blame_target_line.commit_hash
+        else:
+            blame_target_line = None
+            line_target_filename = None
+            target_commit_hash = commit_hash
 
         if target_commit_hash.startswith('^'):
-            is_root_commit = True
-            target_commit_hash = target_commit_hash[1:]
+            target_commit_hash = target_commit_hash[1:]  # initial commit
         sys.stdout.write('... show %s\n' % target_commit_hash)
         c = Commit(target_commit_hash)
-        target_line = c.file_diffs[target_filename].get_line(
-                None, blame_target_line.orig_line_number)
 
-        highlight_lines = {
-            (line_target_filename, None, blame_target_line.orig_line_number): 'target',
-        }
         all_matches = []
-        for _, d in sorted(c.file_diffs.iteritems()):
-            for l in d.lines:
-                if lines_match(l, target_line, params=match_params) and \
-                        (l != target_line) and (l.left_line_num is not None):
-                    match = (d.filename, l.left_line_num, l.right_line_num)
-                    all_matches.append(match)
-                    highlight_lines[match] = str(len(all_matches))
+        if target_line_num:
+            target_line = c.file_diffs[target_filename].get_line(
+                    None, blame_target_line.orig_line_number)
+            highlight_lines = {
+                (line_target_filename, None, blame_target_line.orig_line_number): 'target',
+            }
 
+            for _, d in sorted(c.file_diffs.items()):
+                for l in d.lines:
+                    if lines_match(l, target_line, params=match_params) and \
+                            (l != target_line) and (l.left_line_num is not None):
+                        match = (d.filename, l.left_line_num, l.right_line_num)
+                        all_matches.append(match)
+                        highlight_lines[match] = str(len(all_matches))
+
+        else:
+            highlight_lines = {}
+
+        context_around_highlights = None if (full_diffs or not highlight_lines) else 10
         c.print_stream(sys.stdout, highlight_lines=highlight_lines,
                        context_around_highlights=context_around_highlights)
 
-        if is_root_commit:
-            sys.stdout.write('This is the initial commit.\n')
-            sys.exit(0)
+        filenames = ['q', 'f'] + sorted(c.file_diffs.keys())
+        readline.set_completer(lambda t, s: complete_filenames(t, s, filenames))
 
         choice = None
         while choice is None:
@@ -339,10 +371,8 @@ def iterative_blame_interactive(target_filename, target_line_num,
             else:
                 sys.stdout.write('No matches. Enter another location ' +
                         '(file:line), or enter f to see full diff or q to quit.\n')
-            sys.stdout.write('> ')
-            sys.stdout.flush()
 
-            choice = raw_input().lower()
+            choice = input()
 
             if choice.isdigit():
                 choice = int(choice)
@@ -378,10 +408,13 @@ def iterative_blame_interactive(target_filename, target_line_num,
             assert False, 'incorrect value for choice: %r' % (choice,)
         commit_hash = c.hash + '^'
 
-        print '=' * 120
-        print '=' * 120
-        print '=' * 120
+        print('=' * 120)
+        print('=' * 120)
+        print('=' * 120)
 
+
+##############
+# entry point
 
 if __name__ == '__main__':
 
@@ -395,18 +428,26 @@ if __name__ == '__main__':
              'This disables that behavior.')
     args = parser.parse_args()
 
-    target_filename, target_file_position = args.target_position.split(':')
-    target_file_position = int(target_file_position)
-
     # iterative_blame_interactive assumes we run in the repo root, so chdir to
     # it before calling. however, we also need to prepend the filename with the
     # intermediate dirs
-    base_dir = subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], shell=False).strip()
+    base_dir = subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], shell=False).strip().decode('utf-8')
     current_dir = os.getcwd()
     assert current_dir.startswith(base_dir)
     extra_dirs = current_dir[len(base_dir):].strip('/').split('/')
+
+    if ':' in args.target_position:
+        target_filename, target_file_position = args.target_position.split(':')
+        target_file_position = int(target_file_position)
+    else:
+        target_filename = args.target_position
+        target_file_position = None
+
     target_filename = os.path.join(*(extra_dirs + [target_filename]))
     os.chdir(base_dir)
+
+    readline.set_completer(lambda: None)
+    readline.parse_and_bind('tab: complete')
 
     sys.exit(iterative_blame_interactive(target_filename, target_file_position,
                                          commit_hash=args.commit_hash,
